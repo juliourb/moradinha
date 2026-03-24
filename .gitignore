@@ -1,0 +1,31 @@
+# Dados (muito grandes para o GitHub)
+data/raw/
+data/processed/
+cache/
+
+# Manter estrutura de pastas vazias
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Configurações locais do Claude
+.claude/
+modulo_coleta/.claude/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Windows
+desktop.ini
+Thumbs.db
