@@ -1,0 +1,13 @@
+duckdb
+pyarrow
+geopandas
+pandas
+numpy
+matplotlib
+requests
+tqdm
+osmnx
+rasterio
+rasterstats
+shapely
+geobr

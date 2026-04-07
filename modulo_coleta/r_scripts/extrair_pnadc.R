@@ -1,0 +1,425 @@
+# =============================================================
+# extrair_pnadc.R — Extração de estimativas PNADc por município
+# Módulo de coleta · moradinha / PPGPGT-UFABC
+#
+# Uso:
+#   Rscript extrair_pnadc.R --codigo_ibge 2701407 --ano 2022
+#                           --trimestre 4 --output_dir caminho/
+#
+# Saídas (em output_dir/):
+#   pnadc_{ano}T{trimestre}_estimativas.csv
+#   pnadc_{ano}T{trimestre}_metadados.csv
+#
+# Refatorado de: h3_jacarei/src/coleta/baixar_pnadc.R (v5)
+#   Reaproveitado: padrão auto-install, get_pnadc(), svydesign(), svymean()
+#   Reescrito: seleção dinâmica de estrato (capital/RM/interior) via geobr +
+#              V1023, fallback para dados anuais se S01xxx ausentes
+#
+# LIMITAÇÃO: PNADc não tem representatividade municipal.
+#   Resultados válidos para o DOMÍNIO DE ESTIMAÇÃO (V1029), não para o município.
+#
+# MAPEAMENTO V1023 → tipo de município:
+#   Capital      (código 1)  → município é capital estadual
+#   Resto da RM  (código 2)  → município está em região metropolitana
+#   Resto da UF  (código 5)  → município do interior
+#   (valores reais variam entre UFs — matching por regex, não por código fixo)
+# =============================================================
+
+# ── Auto-instalar pacotes ausentes ────────────────────────────
+pkgs  <- c("PNADcIBGE", "survey", "dplyr", "geobr", "arrow")
+novos <- pkgs[!pkgs %in% installed.packages()[, "Package"]]
+if (length(novos) > 0) {
+  cat("Instalando pacotes:", paste(novos, collapse = ", "), "\n")
+  install.packages(novos, repos = "https://cloud.r-project.org", quiet = TRUE)
+}
+suppressPackageStartupMessages(
+  invisible(lapply(pkgs, library, character.only = TRUE))
+)
+
+# ── Parser de argumentos --chave valor ────────────────────────
+args_raw <- commandArgs(trailingOnly = TRUE)
+args     <- list()
+i        <- 1
+while (i <= length(args_raw)) {
+  if (startsWith(args_raw[i], "--")) {
+    chave <- sub("^--", "", args_raw[i])
+    valor <- if (i + 1 <= length(args_raw) && !startsWith(args_raw[i + 1], "--"))
+               args_raw[i + 1] else NA
+    args[[chave]] <- valor
+    i <- i + 2
+  } else {
+    i <- i + 1
+  }
+}
+
+codigo_ibge <- as.character(args[["codigo_ibge"]])
+ano         <- as.integer(args[["ano"]])
+trimestre   <- as.integer(args[["trimestre"]])
+output_dir  <- as.character(args[["output_dir"]])
+
+if (is.na(codigo_ibge) || is.na(ano) || is.na(trimestre) || is.na(output_dir))
+  stop("Parâmetros obrigatórios: --codigo_ibge --ano --trimestre --output_dir")
+
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+cod_uf <- as.integer(substr(codigo_ibge, 1, 2))
+
+cat("=== PNADc · código IBGE:", codigo_ibge,
+    "| UF:", cod_uf, "| Ano:", ano, "| Trimestre:", trimestre, "===\n")
+
+# ── Variáveis ─────────────────────────────────────────────────
+vars_design <- c("Ano", "Trimestre", "UF", "Estrato", "UPA", "V1028")
+vars_geo    <- c("V1029", "V1022", "V1023")
+vars_hab    <- c(
+  "V2001",   "VD5008",
+  "S01007A", "S01011C", "S01012A", "S01013", "S01017", "S01019"
+)
+vars_todas  <- c(vars_design, vars_geo, vars_hab)
+
+# ── [1/6] Tipo de município via geobr ─────────────────────────
+cat("\n[1/6] Identificando tipo de município (geobr)...\n")
+
+# Verificar se é capital
+is_capital <- tryCatch({
+  caps <- geobr::read_capitals(showProgress = FALSE)
+  as.integer(codigo_ibge) %in% as.integer(caps$code_muni)
+}, error = function(e) { cat("  AVISO geobr capitals:", conditionMessage(e), "\n"); FALSE })
+
+# Verificar se está em RM
+is_rm <- tryCatch({
+  rms  <- geobr::read_metro_area(showProgress = FALSE)
+  as.integer(codigo_ibge) %in% as.integer(rms$code_muni)
+}, error = function(e) { cat("  AVISO geobr metro:", conditionMessage(e), "\n"); FALSE })
+
+# Tipo e padrões regex para match em V1023 (flexível — varia entre UFs)
+if (is_capital) {
+  tipo_mun      <- "capital"
+  v1023_regex   <- "capital"
+  cat("  Tipo:", tipo_mun, "(é capital estadual)\n")
+} else if (is_rm) {
+  tipo_mun      <- "rm"
+  v1023_regex   <- "metro|rm|região metropolitana"
+  cat("  Tipo:", tipo_mun, "(está em RM)\n")
+} else {
+  tipo_mun      <- "interior"
+  v1023_regex   <- "resto da uf|interior|restante|rural"
+  cat("  Tipo:", tipo_mun, "(município do interior)\n")
+}
+
+# ── [2/6] Download PNADc trimestral ───────────────────────────
+cat("\n[2/6] Baixando PNADc", ano, "T", trimestre, "(trimestral)...\n")
+cat("  Isso pode demorar 5-15 min na primeira vez.\n")
+
+pnadc_trim <- tryCatch(
+  get_pnadc(year = ano, quarter = trimestre,
+            vars = vars_todas, design = FALSE),
+  error = function(e) stop(paste("Falha no download da PNADc:", conditionMessage(e)))
+)
+cat("  Total nacional:", nrow(pnadc_trim), "registros\n")
+
+# ── [3/6] Selecionar estrato correto para o município ─────────
+cat("\n[3/6] Selecionando domínio de estimação (V1029)...\n")
+
+# Filtrar pela UF usando prefixo de V1029 (mais robusto que coluna UF,
+# que pode ser haven_labelled e produzir NAs na coerção)
+# V1029 sempre começa com o código da UF de 2 dígitos
+pnadc_uf <- pnadc_trim %>%
+  dplyr::filter(substr(as.character(V1029), 1, 2) == as.character(cod_uf))
+cat("  Registros na UF", cod_uf, ":", nrow(pnadc_uf), "\n")
+
+if (nrow(pnadc_uf) == 0)
+  stop(paste("Nenhum registro para UF", cod_uf, "na PNADc.",
+             "V1029 nacionais (amostra):",
+             paste(head(unique(substr(as.character(pnadc_trim$V1029), 1, 2)), 10),
+                   collapse=", ")))
+
+# Mapear V1029 → V1023 predominante
+v1029_uf  <- as.character(unique(pnadc_uf$V1029))
+cat("  V1029 disponíveis na UF:", paste(v1029_uf, collapse = ", "), "\n")
+
+# Mostrar composição V1023 por V1029
+v1029_info <- data.frame(
+  v1029      = character(0),
+  v1023_vals = character(0),
+  n_obs      = integer(0),
+  match      = logical(0),
+  stringsAsFactors = FALSE
+)
+
+for (v in v1029_uf) {
+  sub_v <- pnadc_uf %>% dplyr::filter(as.character(V1029) == v)
+  v1023_vals <- paste(
+    sort(unique(as.character(sub_v$V1023))), collapse = " | "
+  )
+  matched <- grepl(v1023_regex, v1023_vals, ignore.case = TRUE)
+  v1029_info <- rbind(v1029_info, data.frame(
+    v1029      = v,
+    v1023_vals = v1023_vals,
+    n_obs      = nrow(sub_v),
+    match      = matched,
+    stringsAsFactors = FALSE
+  ))
+  cat(sprintf("  V1029 %-15s | V1023: %-40s | n=%d | %s\n",
+              v, v1023_vals, nrow(sub_v),
+              ifelse(matched, "[MATCH]", "")))
+}
+
+cod_pond <- v1029_info$v1029[v1029_info$match]
+
+# Fallback: se nenhum match, usar todos os V1029 da UF
+if (length(cod_pond) == 0) {
+  cat("  AVISO: nenhum V1029 com V1023 correspondente a '", tipo_mun,
+      "' — usando todos os V1029 da UF como fallback.\n", sep = "")
+  cat("  V1023 encontrados:", paste(unique(pnadc_uf$V1023), collapse=", "), "\n")
+  cod_pond <- v1029_uf
+}
+
+# Filtrar pela(s) área(s) de ponderação selecionadas
+pnadc_mun <- pnadc_uf %>%
+  dplyr::filter(as.character(V1029) %in% cod_pond)
+cat("\n  Registros no domínio selecionado:", nrow(pnadc_mun),
+    "| V1029:", paste(cod_pond, collapse=", "), "\n")
+
+if (nrow(pnadc_mun) == 0)
+  stop("Nenhum registro após filtro de domínio — verifique os dados.")
+
+# ── [4/6] Variáveis habitacionais — fallback trimestral→anual ─
+vars_ausentes_trim  <- setdiff(vars_hab, names(pnadc_trim))
+vars_presentes_trim <- intersect(vars_hab, names(pnadc_trim))
+vars_hab_s01        <- grep("^S01|^VD5008", vars_ausentes_trim, value = TRUE)
+
+pnadc_mun_anual  <- NULL
+vars_hab_anual   <- character(0)
+fonte_hab        <- "trimestral"
+
+if (length(vars_hab_s01) > 0) {
+  cat("\n[4/6] S01xxx/VD5008 ausentes no trimestral — buscando em outros trimestres...\n")
+
+  # Tentativa 1: outros trimestres do mesmo ano (T1→T2→T3, exceto o atual)
+  trimestres_fallback <- setdiff(1:4, trimestre)
+  for (t_alt in trimestres_fallback) {
+    cat("  Tentando", ano, "T", t_alt, "...\n")
+    pnadc_alt <- tryCatch(
+      get_pnadc(year = ano, quarter = t_alt,
+                vars = c(vars_design, vars_geo, vars_hab_s01), design = FALSE),
+      error = function(e) { cat("  AVISO T", t_alt, ":", conditionMessage(e), "\n"); NULL }
+    )
+    if (is.null(pnadc_alt)) next
+
+    vars_encontradas <- intersect(vars_hab_s01, names(pnadc_alt))
+    if (length(vars_encontradas) == 0) {
+      cat("  T", t_alt, ": variáveis ainda ausentes.\n")
+      next
+    }
+
+    cat("  T", t_alt, ": variáveis encontradas:", paste(vars_encontradas, collapse=", "), "\n")
+
+    pnadc_uf_alt  <- pnadc_alt %>%
+      dplyr::filter(substr(as.character(V1029), 1, 2) == as.character(cod_uf))
+    pnadc_mun_alt <- pnadc_uf_alt %>%
+      dplyr::filter(as.character(V1029) %in% cod_pond)
+
+    if (nrow(pnadc_mun_alt) > 0) {
+      pnadc_mun_anual <- pnadc_mun_alt
+      vars_hab_anual  <- vars_encontradas
+      fonte_hab       <- paste0("trimestral (", ano, "T", t_alt, ")")
+      cat("  Usando", ano, "T", t_alt, "para variáveis habitacionais (",
+          nrow(pnadc_mun_alt), "obs)\n")
+      break
+    }
+  }
+
+  # Tentativa 2: PNADc anual interview=5 (última visita — módulo habitação/renda)
+  # Incluir vars_design para que V1028, UPA, Estrato estejam disponíveis no svydesign
+  if (is.null(pnadc_mun_anual)) {
+    cat("  Tentando dados anuais (interview=5 — módulo habitação/renda)...\n")
+    tryCatch({
+      pnadc_raw_anual <- get_pnadc(
+        year      = ano,
+        interview = 5,
+        vars      = c(vars_design, vars_geo, vars_hab_s01),
+        design    = FALSE
+      )
+      cat("  Dados anuais (interview=5):", nrow(pnadc_raw_anual), "registros\n")
+
+      vars_hab_anual_disp <- intersect(vars_hab_s01, names(pnadc_raw_anual))
+      if (length(vars_hab_anual_disp) == 0) {
+        cat("  AVISO: variáveis ainda ausentes na interview=5.\n")
+      } else {
+        # Filtrar por UF via prefixo de V1029 (se disponível) ou coluna UF
+        if ("V1029" %in% names(pnadc_raw_anual)) {
+          pnadc_uf_anual <- pnadc_raw_anual %>%
+            dplyr::filter(substr(as.character(V1029), 1, 2) == as.character(cod_uf))
+          pnadc_mun_anual <- pnadc_uf_anual %>%
+            dplyr::filter(as.character(V1029) %in% cod_pond)
+          if (nrow(pnadc_mun_anual) == 0) pnadc_mun_anual <- pnadc_uf_anual
+        } else {
+          # V1029 ausente no anual: filtrar por coluna UF
+          col_uf_anual <- intersect(c("UF", "uf"), names(pnadc_raw_anual))
+          pnadc_mun_anual <- if (length(col_uf_anual) > 0)
+            pnadc_raw_anual %>% dplyr::filter(
+              suppressWarnings(as.integer(as.character(
+                .data[[col_uf_anual[1]]]
+              ))) == cod_uf)
+          else pnadc_raw_anual
+        }
+
+        # Verificar que variáveis de design estão disponíveis
+        vars_design_anual <- intersect(c("V1028", "UPA", "Estrato"), names(pnadc_mun_anual))
+        if (!"V1028" %in% vars_design_anual) {
+          cat("  AVISO: V1028 ausente no anual — estimativa sem pesos não é válida; pulando.\n")
+        } else {
+          vars_hab_anual <- vars_hab_anual_disp
+          fonte_hab      <- paste0("anual interview=5 (ano ", ano, ")")
+          cat("  Variáveis recuperadas do anual:", paste(vars_hab_anual, collapse=", "),
+              "| n =", nrow(pnadc_mun_anual), "\n")
+        }
+      }
+    }, error = function(e) {
+      cat("  AVISO: dados anuais interview=5 não disponíveis —", conditionMessage(e), "\n")
+    })
+  }
+
+  if (is.null(pnadc_mun_anual))
+    cat("  AVISO: S01xxx não encontradas em nenhum trimestre nem no anual.",
+        "Prosseguindo sem variáveis habitacionais.\n")
+
+} else {
+  cat("\n[4/6] Variáveis habitacionais disponíveis no trimestral.\n")
+}
+
+# Registrar variáveis finais ausentes (após todas as tentativas)
+vars_ausentes_final <- setdiff(
+  vars_hab,
+  c(vars_presentes_trim, vars_hab_anual)
+)
+if (length(vars_ausentes_final) > 0)
+  cat("  AVISO: variáveis ainda ausentes após fallback:",
+      paste(vars_ausentes_final, collapse = ", "), "\n")
+
+# ── [5/6] Plano amostral e estimativas ────────────────────────
+cat("\n[5/6] Calculando estimativas...\n")
+
+safe_svymean <- function(var, design, fonte = "") {
+  if (!var %in% names(design$variables)) return(NULL)
+  design$variables[[var]] <- suppressWarnings(
+    as.numeric(as.character(design$variables[[var]]))
+  )
+  tryCatch({
+    frm    <- as.formula(paste0("~", var))
+    est    <- svymean(frm, design = design, na.rm = TRUE)
+    n_obs  <- sum(!is.na(design$variables[[var]]))
+    data.frame(
+      variavel    = var,
+      estimativa  = as.numeric(coef(est)),
+      erro_padrao = as.numeric(SE(est)),
+      ic_lower    = as.numeric(confint(est)[, 1]),
+      ic_upper    = as.numeric(confint(est)[, 2]),
+      n_obs       = n_obs,
+      fonte       = fonte,
+      stringsAsFactors = FALSE
+    )
+  }, error = function(e) {
+    cat("  AVISO: svymean falhou para", var, "—", conditionMessage(e), "\n")
+    NULL
+  })
+}
+
+resultados <- list()
+
+# Estimativas do trimestral (renda + V2001 + S01xxx se presentes)
+if (length(vars_presentes_trim) > 0) {
+  design_trim <- svydesign(
+    ids     = ~UPA,
+    strata  = ~Estrato,
+    weights = ~as.numeric(V1028),
+    data    = pnadc_mun,
+    nest    = TRUE
+  )
+  cat("  svydesign trimestral:", nrow(pnadc_mun), "obs,",
+      length(unique(pnadc_mun$UPA)), "UPAs\n")
+
+  for (var in vars_presentes_trim) {
+    r <- safe_svymean(var, design_trim, fonte = "trimestral")
+    if (!is.null(r)) {
+      resultados[[var]] <- r
+      cat(sprintf("  %-10s = %.4f ± %.4f  [%s]\n",
+                  var, r$estimativa, r$erro_padrao, r$fonte))
+    }
+  }
+}
+
+# Estimativas do anual (S01xxx não disponíveis no trimestral)
+if (!is.null(pnadc_mun_anual) && length(vars_hab_anual) > 0) {
+  design_anual <- svydesign(
+    ids     = ~UPA,
+    strata  = ~Estrato,
+    weights = ~as.numeric(V1028),
+    data    = pnadc_mun_anual,
+    nest    = TRUE
+  )
+  cat("  svydesign anual:", nrow(pnadc_mun_anual), "obs,",
+      length(unique(pnadc_mun_anual$UPA)), "UPAs\n")
+
+  for (var in vars_hab_anual) {
+    r <- safe_svymean(var, design_anual, fonte = fonte_hab)
+    if (!is.null(r) && !var %in% names(resultados)) {
+      resultados[[var]] <- r
+      cat(sprintf("  %-10s = %.4f ± %.4f  [%s]\n",
+                  var, r$estimativa, r$erro_padrao, r$fonte))
+    }
+  }
+}
+
+if (length(resultados) == 0)
+  stop("Nenhuma estimativa calculada.")
+
+df_estimativas <- dplyr::bind_rows(resultados)
+df_estimativas$ano         <- ano
+df_estimativas$trimestre   <- trimestre
+df_estimativas$codigo_ibge <- codigo_ibge
+
+# ── [6/6] Salvar ──────────────────────────────────────────────
+cat("\n[6/6] Salvando resultados...\n")
+
+arq_est <- file.path(output_dir,
+  paste0("pnadc_", ano, "T", trimestre, "_estimativas.csv"))
+write.csv(df_estimativas, arq_est, row.names = FALSE, fileEncoding = "UTF-8")
+cat("  Estimativas:", arq_est, "(", nrow(df_estimativas), "variáveis)\n")
+
+df_meta <- data.frame(
+  chave = c(
+    "fonte_trimestral", "fonte_hab", "ano", "trimestre",
+    "tipo_municipio", "nivel_geografico",
+    "v1029_selecionados", "v1023_regex_usado",
+    "variaveis_trimestral", "variaveis_anual", "variaveis_ausentes",
+    "n_obs_trimestral", "n_obs_anual",
+    "aviso"
+  ),
+  valor = c(
+    "IBGE PNADc trimestral",
+    fonte_hab,
+    as.character(ano),
+    as.character(trimestre),
+    tipo_mun,
+    "dominio_estimacao_v1029",
+    paste(cod_pond, collapse = "; "),
+    v1023_regex,
+    paste(vars_presentes_trim, collapse = "; "),
+    paste(vars_hab_anual,      collapse = "; "),
+    paste(vars_ausentes_final, collapse = "; "),
+    as.character(nrow(pnadc_mun)),
+    as.character(if (!is.null(pnadc_mun_anual)) nrow(pnadc_mun_anual) else 0),
+    paste0(
+      "Estimativas validas para o dominio V1029 (", paste(cod_pond, collapse=";"),
+      "). NAO representam o municipio ", codigo_ibge, " isoladamente."
+    )
+  ),
+  stringsAsFactors = FALSE
+)
+
+arq_meta <- file.path(output_dir,
+  paste0("pnadc_", ano, "T", trimestre, "_metadados.csv"))
+write.csv(df_meta, arq_meta, row.names = FALSE, fileEncoding = "UTF-8")
+cat("  Metadados:", arq_meta, "\n")
+
+cat("\n=== CONCLUÍDO ===\n")

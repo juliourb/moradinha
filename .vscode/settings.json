@@ -1,0 +1,6 @@
+{
+    "python.defaultInterpreterPath": "C:\\Users\\julio.santos03\\AppData\\Local\\anaconda3\\envs\\moradinha\\python.exe",
+    "python.terminal.activateEnvironment": true,
+    "jupyter.kernelSpecFindPreferred": "C:\\Users\\julio.santos03\\AppData\\Local\\anaconda3\\envs\\moradinha\\python.exe",
+    "jupyter.notebookFileRoot": "${workspaceFolder}"
+}
