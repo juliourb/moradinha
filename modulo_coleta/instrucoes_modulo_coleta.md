@@ -99,7 +99,7 @@ Ao encerrar uma sessão (ou quando o pesquisador disser "salva o contexto"), o a
 | `grupo4_luminosidade.py` | ✅ Concluído | Testado com 2701407 (Campo Alegre-AL). modo='tile_local'. TIF 54x56px. luminosidade_2022 (66 setores) + luminosidade_2022_grade200 (976 células). |
 | `grupo5_pnadc.py` | ✅ Concluído | Testado com 2701407 (Campo Alegre-AL). V2001=3.25±0.05, n=4732, V1029=2717818 (RM). S01xxx ausentes em todo PNADc 2022 — documentado nos metadados. |
 | `grupo6_extensoes.py` (stub) | ⬜ Pendente | — |
-| `orquestrador.py` | ⬜ Pendente | — |
+| `orquestrador.py` | 🟡 Em progresso | Implementação do mapa vetorial com luminosidade de grade 200m. |
 
 ---
 
@@ -122,6 +122,7 @@ Ao encerrar uma sessão (ou quando o pesquisador disser "salva o contexto"), o a
 | 2026-03-22 | OSMnx: colunas com valores mistos (int + lista de ints) convertidas para `str` inteiramente antes do parquet | Converter só os valores lista | PyArrow infere int64 na coluna, rejeita str ao encontrar lista serializada |
 | 2026-03-22 | VIIRS VNL V2.2 não define nodata nos metadados do TIF — passar `nodata=0` explicitamente para `rasterstats` (0 = ausência de luz = nodata para este produto) | Deixar rasterstats adivinhar (-999) ou suprimir o warning | 0 é o valor semanticamente correto para o produto average_masked |
 | 2026-03-22 | Tile VIIRS baixado manualmente (global ~500MB) — modo='tile_local' como padrão; modo='download' reservado para implementação futura com token EOG | Download automático em todas as chamadas | Tile global reutilizável para qualquer município; download único evita retrabalho |
+| 2026-04-14 | Orquestrador usa a tabela `luminosidade_YYYY_grade200` unida à `grade_estatistica` para plotar luminosidade de fundo | Ler `luminosidade_YYYY_grade200` como GeoDataFrame direto | A tabela de estatísticas não contém geometria; é necessário fazer um join com a grade espacial |
 | 2026-03-22 | `ler_tabela_espacial()` adicionado em raster_utils.py — lê tabela com geometria do DuckDB via ST_AsWKB → GeoDataFrame | Reimplementar em cada grupo | Função reutilizável para qualquer grupo que precise ler geometrias do banco |
 | 2026-03-22 | PNADc: geobr `code_weighting` ≠ PNADc `V1029` — sistemas de codificação diferentes (13 dígitos vs 7 dígitos). Filtro feito por prefixo de 2 dígitos de V1029 (= código UF) em vez de usar geobr para obter V1029 | Correspondência direta geobr→V1029 | Mismatch confirmado em campo: code_weighting=2701407003002 vs V1029=2717818 |
 | 2026-03-22 | Coluna UF do PNADc é haven_labelled — converter para integer diretamente produz NAs. Filtrar por UF usando prefixo de V1029: `substr(V1029, 1, 2) == cod_uf` | `as.integer(as.character(UF)) == cod_uf` | Abordagem UF via label falhou; prefixo de V1029 é robusto |
@@ -137,7 +138,7 @@ Ao encerrar uma sessão (ou quando o pesquisador disser "salva o contexto"), o a
 
 | Data | Erro | Solução |
 |---|---|---|
-| — | — | — |
+| 2026-04-14 | `luminosidade_YYYY_grade200` não contém geometria e não pode ser lida diretamente como GeoDataFrame | Unir a tabela de estatísticas à camada `grade_estatistica` com geometria antes de plotar |
 
 ---
 

@@ -1,6 +1,56 @@
 {
-    "python.defaultInterpreterPath": "C:\\Users\\julio.santos03\\AppData\\Local\\anaconda3\\envs\\moradinha\\python.exe",
+    // --- Ambiente Python ---
+    "python.defaultInterpreterPath": "C:\\Users\\User\\AppData\\Local\\anaconda3\\envs\\moradinha\\python.exe",
     "python.terminal.activateEnvironment": true,
-    "jupyter.kernelSpecFindPreferred": "C:\\Users\\julio.santos03\\AppData\\Local\\anaconda3\\envs\\moradinha\\python.exe",
-    "jupyter.notebookFileRoot": "${workspaceFolder}"
+
+    // --- Jupyter ---
+    "jupyter.kernelSpecFindPreferred": "C:\\Users\\User\\AppData\\Local\\anaconda3\\envs\\moradinha\\python.exe",
+    "jupyter.notebookFileRoot": "${workspaceFolder}",
+
+    // --- Análise estática (Pylance) ---
+    "python.languageServer": "Pylance",
+    "python.analysis.extraPaths": ["${workspaceFolder}"],
+    "python.analysis.typeCheckingMode": "basic",
+
+    // --- Testes ---
+    "python.testing.pytestEnabled": true,
+    "python.testing.pytestArgs": ["modulo_coleta/tests"],
+    "python.testing.unittestEnabled": false,
+
+    // --- Formatação ---
+    "[python]": {
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "ms-python.black-formatter",
+        "editor.rulers": [88]
+    },
+    "[jupyter-notebook]": {
+        "editor.formatOnSave": false
+    },
+
+    // --- Editor geral ---
+    "editor.renderWhitespace": "trailing",
+    "files.trimTrailingWhitespace": true,
+    "files.insertFinalNewline": true,
+
+    // --- Ocultar pastas grandes no Explorer ---
+    "files.exclude": {
+        "**/__pycache__": true,
+        "**/*.pyc": true,
+        "**/.ipynb_checkpoints": true,
+        "data/raw/**/": true,
+        "data/processed/**/": true,
+        "fonte/**/*.dbf": true,
+        "fonte/**/*.shp": true,
+        "fonte/**/*.shx": true,
+        "fonte/**/*.sbx": true,
+        "fonte/**/*.sbn": true
+    },
+
+    // --- Excluir das buscas ---
+    "search.exclude": {
+        "data/**": true,
+        "fonte/**": true,
+        "**/__pycache__": true,
+        "**/.ipynb_checkpoints": true
+    }
 }

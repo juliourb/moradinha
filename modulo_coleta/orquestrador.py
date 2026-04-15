@@ -123,161 +123,163 @@ def _buscar_tabela_luminosidade(tabelas: list[str]) -> str | None:
     return candidatas[-1] if candidatas else None
 
 
-def _gerar_mapa(db_conn: duckdb.DuckDBPyConnection, nome_municipio: str, output_path: Path) -> None:
+def _buscar_tabela_luminosidade_grade200(tabelas: list[str]) -> str | None:
+    """Retorna o nome da tabela de luminosidade por grade 200m (ex: 'luminosidade_2022_grade200')."""
+    import re
+    candidatas = [t for t in tabelas if re.fullmatch(r"luminosidade_\d{4}_grade200", t)]
+    return candidatas[-1] if candidatas else None
+
+
+def _buscar_raster_viirs(raw_dir: Path) -> Path | None:
+    """Procura o TIF VIIRS recortado em raw_dir/luminosidade/. Retorna None se não encontrar."""
+    lum_dir = raw_dir / "luminosidade"
+    if not lum_dir.exists():
+        return None
+    candidatos = sorted(lum_dir.glob("viirs_*_recortado.tif"))
+    return candidatos[-1] if candidatos else None
+
+
+def _gerar_mapa(db_conn: duckdb.DuckDBPyConnection, nome_municipio: str, output_path: Path, codigo_ibge: str) -> plt.Figure:
     """
-    Gera figura com dois painéis e salva em PNG.
+    Gera mapa vetorial com luminosidade como fundo e camadas sobrepostas.
 
-    Painel esquerdo — camadas vetoriais:
-        setores_censitarios  — cinza claro, borda cinza fina
-        areas_ponderacao     — sem preenchimento, borda laranja tracejada
-        grade_estatistica    — sem preenchimento, borda azul fina
-        faces_logradouro     — laranja escuro
-        eixos_osm            — azul médio
-        enderecos_cnefe      — pontos coral (amostra ≤ 2000)
-        limite_municipal     — sem preenchimento, borda preta espessa
-
-    Painel direito — luminosidade noturna VIIRS (coroplético por setor):
-        Colormap 'YlOrRd' pela média VIIRS.
-        Exibido apenas se a tabela luminosidade_{ano} estiver no banco.
+    Sempre gera o mapa vetorial com:
+    - Luminosidade agregada na grade 200m como fundo (alpha=0.4, colormap YlOrRd, normalizado 5-95%)
+    - Camadas vetoriais sobrepostas na ordem especificada
+    - Legenda com patches e colorbar para luminosidade
     """
     import re
+    import numpy as np
     import matplotlib.colors as mcolors
     from matplotlib.lines import Line2D
 
     tabelas = listar_tabelas(db_conn)
-    titulo = nome_municipio.replace("_", " ").title()
+    titulo = f'Camadas coletadas — {nome_municipio.replace("_", " ").title()} ({codigo_ibge})'
 
-    tem_luminosidade = _buscar_tabela_luminosidade(tabelas) is not None
-    n_paineis = 2 if tem_luminosidade else 1
-    fig, axes = plt.subplots(1, n_paineis, figsize=(12 * n_paineis, 13))
-    if n_paineis == 1:
-        axes = [axes]
+    fig, ax = plt.subplots(figsize=(14, 12))
     fig.patch.set_facecolor("#f7f7f7")
-
-    # ------------------------------------------------------------------
-    # Painel 1 — camadas vetoriais
-    # ------------------------------------------------------------------
-    ax = axes[0]
+    ax.set_facecolor("#e8edf2")
     ax.set_aspect("equal")
     ax.set_axis_off()
-    ax.set_facecolor("#e8edf2")
-    ax.set_title("Camadas coletadas", fontsize=12, fontweight="bold", pad=10)
 
     handles = []
 
-    # 1. Setores censitários (fundo)
+    # ------------------------------------------------------------------
+    # 1. Fundo: Luminosidade na grade estatística (alpha=0.4)
+    # ------------------------------------------------------------------
+    gdf_grade = _ler_camada(db_conn, tabelas, "grade_estatistica")
+    tabela_lum_grade = _buscar_tabela_luminosidade_grade200(tabelas)
+    df_lum = None
+    if tabela_lum_grade is not None:
+        try:
+            df_lum = db_conn.execute(f"SELECT * FROM {tabela_lum_grade}").fetchdf()
+        except Exception as exc:
+            logger.warning("Não foi possível ler '%s': %s", tabela_lum_grade, exc)
+
+    if gdf_grade is not None and df_lum is not None:
+        # Encontrar coluna de ID para merge
+        col_id = next(
+            (c for c in gdf_grade.columns if c.upper() in ("ID_UNICO", "ID", "CELL_ID")),
+            None,
+        )
+        if col_id and col_id in df_lum.columns:
+            gdf_merged = gdf_grade.merge(df_lum, on=col_id, how="left")
+            if "viirs_mean" in gdf_merged.columns:
+                values = gdf_merged["viirs_mean"]
+                if values.notna().any():
+                    vmin, vmax = np.percentile(values.dropna(), [5, 95])
+                    gdf_merged.plot(
+                        ax=ax,
+                        column="viirs_mean",
+                        cmap="YlOrRd",
+                        alpha=0.4,
+                        vmin=vmin,
+                        vmax=vmax,
+                        legend=False,
+                    )
+                    # Colorbar
+                    sm = plt.cm.ScalarMappable(
+                        cmap="YlOrRd",
+                        norm=mcolors.Normalize(vmin=vmin, vmax=vmax),
+                    )
+                    sm.set_array([])
+                    cbar = plt.colorbar(sm, ax=ax, shrink=0.5, pad=0.02, aspect=30)
+                    cbar.set_label("Luminosidade média (nW/cm²/sr)", fontsize=10, labelpad=8)
+                    cbar.ax.yaxis.set_tick_params(labelsize=8)
+                    handles.append(mpatches.Patch(facecolor="#f9e2c5", edgecolor="#cccccc", label="Luminosidade (grade 200m)"))
+                else:
+                    logger.warning("Nenhum valor válido de luminosidade encontrado na grade.")
+            else:
+                logger.warning("Coluna 'viirs_mean' não encontrada em %s.", tabela_lum_grade)
+        else:
+            logger.warning("Coluna de ID não encontrada para merge da luminosidade com grade.")
+    else:
+        logger.info("Grade estatística ou luminosidade não disponíveis — fundo sem cor.")
+
+    # ------------------------------------------------------------------
+    # 2. Setores censitários (bordas apenas)
+    # ------------------------------------------------------------------
     gdf = _ler_camada(db_conn, tabelas, "setores_censitarios")
     if gdf is not None:
-        gdf.plot(ax=ax, color="#dde3ea", edgecolor="#aaaaaa", linewidth=0.4)
-        handles.append(mpatches.Patch(facecolor="#dde3ea", edgecolor="#aaaaaa", label="Setores censitários"))
+        gdf.plot(ax=ax, color="none", edgecolor="#555555", linewidth=0.5)
+        handles.append(mpatches.Patch(edgecolor="#555555", facecolor="none", linewidth=0.5, label="Setores censitários"))
 
-    # 2. Grade estatística
-    gdf = _ler_camada(db_conn, tabelas, "grade_estatistica")
-    if gdf is not None:
-        gdf.plot(ax=ax, color="none", edgecolor="#6699cc", linewidth=0.35)
-        handles.append(Line2D([0], [0], color="#6699cc", linewidth=1.0, label="Grade estatística 200m"))
-
-    # 3. Áreas de ponderação
+    # ------------------------------------------------------------------
+    # 3. Áreas de ponderação (bordas tracejadas)
+    # ------------------------------------------------------------------
     gdf = _ler_camada(db_conn, tabelas, "areas_ponderacao")
     if gdf is not None:
-        gdf.plot(ax=ax, color="none", edgecolor="#e07b00", linewidth=1.4, linestyle="--")
-        handles.append(Line2D([0], [0], color="#e07b00", linewidth=1.4, linestyle="--", label="Áreas de ponderação"))
+        gdf.plot(ax=ax, color="none", edgecolor="blue", linewidth=1.2, linestyle="--")
+        handles.append(Line2D([0], [0], color="blue", linewidth=1.2, linestyle="--", label="Áreas de ponderação"))
 
-    # 4. Faces de logradouro
+    # ------------------------------------------------------------------
+    # 4. Faces de logradouro (linhas finas)
+    # ------------------------------------------------------------------
     gdf = _ler_camada(db_conn, tabelas, "faces_logradouro")
     if gdf is not None:
-        gdf.plot(ax=ax, color="#c07000", linewidth=0.9)
-        handles.append(Line2D([0], [0], color="#c07000", linewidth=1.5, label="Faces de logradouro (IBGE)"))
+        gdf.plot(ax=ax, color="#888888", linewidth=0.3, alpha=0.6)
+        handles.append(Line2D([0], [0], color="#888888", linewidth=1.0, alpha=0.6, label="Faces de logradouro"))
 
-    # 5. Eixos OSM
+    # ------------------------------------------------------------------
+    # 5. Eixos OSM (linhas)
+    # ------------------------------------------------------------------
     gdf = _ler_camada(db_conn, tabelas, "eixos_osm")
     if gdf is not None:
-        gdf.plot(ax=ax, color="#2255aa", linewidth=0.6, alpha=0.8)
-        handles.append(Line2D([0], [0], color="#2255aa", linewidth=1.5, label="Eixos viários (OSM)"))
+        gdf.plot(ax=ax, color="#333333", linewidth=0.5, alpha=0.7)
+        handles.append(Line2D([0], [0], color="#333333", linewidth=1.0, alpha=0.7, label="Eixos viários (OSM)"))
 
-    # 6. Endereços CNEFE (amostra)
+    # ------------------------------------------------------------------
+    # 6. Endereços CNEFE (pontos pequenos)
+    # ------------------------------------------------------------------
     gdf = _ler_camada(db_conn, tabelas, "enderecos_cnefe")
     if gdf is not None:
         amostra = gdf.sample(min(2000, len(gdf)), random_state=42) if len(gdf) > 2000 else gdf
-        amostra.plot(ax=ax, color="#e03030", markersize=1.2, alpha=0.5)
-        rotulo = f"Endereços CNEFE (amostra {len(amostra):,})" if len(gdf) > 2000 else f"Endereços CNEFE ({len(gdf):,})"
-        handles.append(Line2D([0], [0], marker="o", color="w", markerfacecolor="#e03030",
-                               markersize=5, alpha=0.7, label=rotulo))
+        amostra.plot(ax=ax, color="#222222", markersize=0.8, alpha=0.3)
+        rotulo = f"Endereços CNEFE ({len(amostra):,})" if len(gdf) > 2000 else f"Endereços CNEFE ({len(gdf):,})"
+        handles.append(Line2D([0], [0], marker="o", color="w", markerfacecolor="#222222", markersize=3, alpha=0.5, label=rotulo))
 
-    # 7. Limite municipal (frente)
+    # ------------------------------------------------------------------
+    # 7. Limite municipal (borda externa grossa)
+    # ------------------------------------------------------------------
     gdf = _ler_camada(db_conn, tabelas, "limite_municipal")
     if gdf is not None:
-        gdf.plot(ax=ax, color="none", edgecolor="#111111", linewidth=2.0)
-        handles.append(Line2D([0], [0], color="#111111", linewidth=2.0, label="Limite municipal"))
-
-    ax.legend(handles=handles, loc="lower left", fontsize=7.5,
-              framealpha=0.85, edgecolor="#cccccc")
+        gdf.plot(ax=ax, color="none", edgecolor="black", linewidth=2.0)
+        handles.append(Line2D([0], [0], color="black", linewidth=2.0, label="Limite municipal"))
 
     # ------------------------------------------------------------------
-    # Painel 2 — luminosidade noturna (coroplético)
+    # Legenda
     # ------------------------------------------------------------------
-    if tem_luminosidade:
-        ax2 = axes[1]
-        ax2.set_aspect("equal")
-        ax2.set_axis_off()
-        ax2.set_facecolor("#e8edf2")
+    ax.legend(handles=handles, loc="lower left", fontsize=8, framealpha=0.9, edgecolor="#cccccc")
 
-        nome_lum = _buscar_tabela_luminosidade(tabelas)
-        ano_lum = re.search(r"\d{4}", nome_lum).group()
-        ax2.set_title(f"Luminosidade noturna VIIRS {ano_lum}\n(média por setor censitário)",
-                      fontsize=12, fontweight="bold", pad=10)
-
-        try:
-            gdf_setores = ler_tabela_espacial(db_conn, "setores_censitarios")
-            df_lum = db_conn.execute(f"SELECT * FROM {nome_lum}").fetchdf()
-
-            # Identifica coluna de setor na tabela de luminosidade
-            col_setor_lum = next(
-                (c for c in df_lum.columns if c.upper() in ("CD_SETOR", "COD_SETOR")), None
-            )
-            col_setor_geo = next(
-                (c for c in gdf_setores.columns if c.upper() in ("CD_SETOR", "COD_SETOR")), None
-            )
-
-            if col_setor_lum and col_setor_geo:
-                gdf_lum = gdf_setores.merge(
-                    df_lum[[col_setor_lum, "viirs_mean"]],
-                    left_on=col_setor_geo,
-                    right_on=col_setor_lum,
-                    how="left",
-                )
-                gdf_lum.plot(
-                    ax=ax2,
-                    column="viirs_mean",
-                    cmap="YlOrRd",
-                    legend=True,
-                    legend_kwds={"label": "Radiância média (nW/cm²/sr)", "shrink": 0.6},
-                    missing_kwds={"color": "#cccccc", "label": "Sem dado"},
-                    edgecolor="#aaaaaa",
-                    linewidth=0.3,
-                )
-            else:
-                ax2.text(0.5, 0.5, "Coluna CD_SETOR não encontrada", transform=ax2.transAxes,
-                         ha="center", va="center", color="gray")
-
-            # Limite por cima
-            gdf_lim = _ler_camada(db_conn, tabelas, "limite_municipal")
-            if gdf_lim is not None:
-                gdf_lim.plot(ax=ax2, color="none", edgecolor="#111111", linewidth=2.0)
-
-        except Exception as exc:
-            logger.warning("Erro ao plotar luminosidade: %s", exc)
-            ax2.text(0.5, 0.5, f"Erro: {exc}", transform=ax2.transAxes,
-                     ha="center", va="center", fontsize=8, color="red")
+    fig.suptitle(titulo, fontsize=14, fontweight="bold", y=0.95)
+    fig.tight_layout()
 
     # ------------------------------------------------------------------
-    # Título geral e salvamento
+    # Salvamento
     # ------------------------------------------------------------------
-    fig.suptitle(titulo, fontsize=15, fontweight="bold", y=1.01)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
-    plt.close(fig)
     logger.info("Mapa salvo em: %s", output_path)
+    return fig
 
 
 # ---------------------------------------------------------------------------
@@ -421,11 +423,13 @@ def coletar_municipio(
         logger.info("Gerando mapa de coleta...")
         mapa_path = processed_dir / "mapa_coleta.png"
         try:
-            _gerar_mapa(db_conn, nome_municipio, mapa_path)
+            fig = _gerar_mapa(db_conn, nome_municipio, mapa_path, codigo_ibge)
             resultados["mapa"] = str(mapa_path)
+            resultados["fig"] = fig
         except Exception as exc:
             logger.error("Erro ao gerar mapa: %s", exc, exc_info=True)
             resultados["mapa"] = None
+            resultados["fig"] = None
 
     finally:
         db_conn.close()
@@ -434,7 +438,7 @@ def coletar_municipio(
     logger.info("=" * 60)
     logger.info("Coleta concluída para %s", nome_municipio)
     for g, res in resultados.items():
-        if g == "mapa":
+        if g in ("mapa", "fig"):
             continue
         status = res.get("status", "?")
         camadas = res.get("camadas", [])
