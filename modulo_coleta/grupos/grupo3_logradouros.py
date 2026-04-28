@@ -12,7 +12,16 @@ Refatorado de: template_dados_IBGE_por_municipio.ipynb
     baixar_eixos_osm()                  → utils/osmx.py
 
 Tabelas DuckDB geradas:
-    enderecos_cnefe, faces_logradouro, eixos_osm
+    enderecos_cnefe             — bruta (todos os COD_ESPECIE, todas as qualidades)
+    enderecos_cnefe_residencial — COD_ESPECIE=1 (domicílios particulares)
+    enderecos_cnefe_naoresidencial — COD_ESPECIE ∈ {4,5,6,8} (ensino, saúde, outras, religiosos)
+    faces_logradouro, eixos_osm
+
+Todas as tabelas CNEFE incluem coluna qualidade_geo (alta/media/baixa) derivada de
+NV_GEO_COORD, para filtragem downstream quando a covariável depende de localização fina.
+
+COD_ESPECIE=2 (domicílio coletivo) e COD_ESPECIE=7 (em construção) ficam apenas na
+tabela bruta — não integram as tabelas filtradas.
 
 Dependências: utils/ibge_ftp.py, utils/osmx.py, utils/db_utils.py
 """
@@ -36,6 +45,25 @@ from ..utils.ibge_ftp import (
 from ..utils.osmx import baixar_eixos_osm
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Constantes CNEFE
+# ---------------------------------------------------------------------------
+
+_NV_GEO_QUALIDADE: dict[str, str] = {
+    "1": "alta", "2": "alta",
+    "3": "media", "4": "media",
+    "5": "baixa", "6": "baixa",
+}
+
+_COD_ESPECIE_RESIDENCIAL:    frozenset[str] = frozenset({"1"})
+_COD_ESPECIE_NAORESIDENCIAL: frozenset[str] = frozenset({"4", "5", "6", "8"})
+
+
+def _col_by_upper(df: pd.DataFrame, nome_upper: str) -> str | None:
+    """Returns the first column whose upper-case name matches nome_upper, or None."""
+    return next((c for c in df.columns if c.upper() == nome_upper), None)
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +137,19 @@ def _carregar_cnefe(
         "CNEFE: %d/%d endereços retidos para o município",
         len(gdf_mun), len(gdf),
     )
+
+    # Coluna qualidade_geo derivada de NV_GEO_COORD
+    col_nv = _col_by_upper(gdf_mun, "NV_GEO_COORD")
+    if col_nv:
+        gdf_mun["qualidade_geo"] = (
+            gdf_mun[col_nv].astype(str).str.strip()
+            .map(_NV_GEO_QUALIDADE)
+            .fillna("desconhecida")
+        )
+    else:
+        logger.warning("CNEFE: coluna NV_GEO_COORD não encontrada — qualidade_geo='desconhecida'.")
+        gdf_mun["qualidade_geo"] = "desconhecida"
+
     return gdf_mun
 
 
@@ -197,10 +238,33 @@ def coletar_grupo3(
         # --- 1. Endereços CNEFE ---
         logger.info("[Grupo 3] Endereços CNEFE")
         gdf_cnefe = _carregar_cnefe(codigo_ibge, limite_municipal, output_dir, forcar)
+
+        # Tabela bruta (todas as espécies, todas as qualidades)
         gdf_cnefe.to_file(output_dir / "enderecos_cnefe.gpkg", driver="GPKG")
         salvar_geodataframe(db_conn, gdf_cnefe, "enderecos_cnefe")
         camadas_salvas.append("enderecos_cnefe")
-        logger.info("[Grupo 3] CNEFE OK: %d endereços", len(gdf_cnefe))
+
+        # Tabelas filtradas por COD_ESPECIE
+        col_esp = _col_by_upper(gdf_cnefe, "COD_ESPECIE")
+        if col_esp:
+            cod = gdf_cnefe[col_esp].astype(str).str.strip()
+
+            gdf_resid = gdf_cnefe[cod.isin(_COD_ESPECIE_RESIDENCIAL)].copy()
+            salvar_geodataframe(db_conn, gdf_resid, "enderecos_cnefe_residencial")
+            camadas_salvas.append("enderecos_cnefe_residencial")
+
+            gdf_naoresid = gdf_cnefe[cod.isin(_COD_ESPECIE_NAORESIDENCIAL)].copy()
+            salvar_geodataframe(db_conn, gdf_naoresid, "enderecos_cnefe_naoresidencial")
+            camadas_salvas.append("enderecos_cnefe_naoresidencial")
+
+            dist_qual = gdf_cnefe["qualidade_geo"].value_counts().to_dict()
+            logger.info(
+                "[Grupo 3] CNEFE OK: %d total | %d residencial | %d não-residencial | qualidade: %s",
+                len(gdf_cnefe), len(gdf_resid), len(gdf_naoresid), dist_qual,
+            )
+        else:
+            logger.warning("[Grupo 3] COD_ESPECIE não encontrada — apenas tabela bruta gerada.")
+            logger.info("[Grupo 3] CNEFE OK: %d endereços", len(gdf_cnefe))
 
         # --- 2. Faces de logradouro ---
         logger.info("[Grupo 3] Faces de logradouro")

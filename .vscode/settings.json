@@ -8,7 +8,7 @@
     "jupyter.notebookFileRoot": "${workspaceFolder}",
 
     // --- Análise estática (Pylance) ---
-    "python.languageServer": "Pylance",
+    "python.languageServer": "Jedi",
     "python.analysis.extraPaths": ["${workspaceFolder}"],
     "python.analysis.typeCheckingMode": "basic",
 

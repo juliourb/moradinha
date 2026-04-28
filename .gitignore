@@ -1,11 +1,17 @@
 # Dados (muito grandes para o GitHub)
 data/raw/
 data/processed/
+data/cache_pnadc/
 cache/
+
+# Arquivos QGIS e GeoPackage
+*.qgz
+*.gpkg
 
 # Manter estrutura de pastas vazias
 !data/raw/.gitkeep
 !data/processed/.gitkeep
+!data/cache_pnadc/.gitkeep
 
 # Configurações locais do Claude
 .claude/
