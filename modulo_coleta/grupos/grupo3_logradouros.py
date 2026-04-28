@@ -212,8 +212,13 @@ def coletar_grupo3(
 
         # --- 3. Eixos OSM ---
         logger.info("[Grupo 3] Eixos OSM")
-        gdf_eixos = baixar_eixos_osm(limite_municipal, network_type=network_type)
-        gdf_eixos.to_file(output_dir / "eixos_osm.gpkg", driver="GPKG")
+        gpkg_eixos = output_dir / "eixos_osm.gpkg"
+        if gpkg_eixos.exists() and not forcar:
+            logger.info("Arquivo já existe (pulando download): %s", gpkg_eixos)
+            gdf_eixos = gpd.read_file(gpkg_eixos)
+        else:
+            gdf_eixos = baixar_eixos_osm(limite_municipal, network_type=network_type)
+            gdf_eixos.to_file(gpkg_eixos, driver="GPKG")
         salvar_geodataframe(db_conn, gdf_eixos, "eixos_osm")
         camadas_salvas.append("eixos_osm")
         logger.info("[Grupo 3] Eixos OSM OK: %d arestas", len(gdf_eixos))

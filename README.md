@@ -51,7 +51,7 @@ moradinha/
 | 2 — Censo 2022 | IBGE FTP (Agregados por Setor) | Baixado automaticamente pelo grupo2 |
 | 3 — Logradouros | IBGE CNEFE + OSMnx | Baixado automaticamente pelo grupo3 |
 | 4 — Luminosidade noturna | EOG / Colorado School of Mines | **Download manual** — ver instruções abaixo |
-| 5 — PNADc | IBGE via pacote R `PNADcIBGE` | Baixado automaticamente pelo grupo5 via R |
+| 5 — PNADc | IBGE FTP (microdados + dicionário) | Baixado automaticamente pelo grupo5 via Python (requests + pandas.read_fwf + svy) |
 
 ### Luminosidade noturna VIIRS (grupo 4)
 
@@ -84,9 +84,9 @@ O orquestrador unificado (`coletar_municipio`) está em desenvolvimento.
 
 ## Dependências
 
-**Python:** `geopandas`, `duckdb`, `rasterio`, `rasterstats`, `osmnx`, `geobr`, `pandas`, `numpy`
+**Python:** `geopandas`, `duckdb`, `rasterio`, `rasterstats`, `osmnx`, `geobr`, `pandas`, `numpy`, `requests`, `svy`, `openpyxl`, `xlrd`
 
-**R:** `PNADcIBGE`, `survey`, `geobr` (necessário apenas para o grupo 5)
+~~**R:** `PNADcIBGE`, `survey`, `geobr` (necessário apenas para o grupo 5)~~ — removido em 2026-04-21: o Grupo 5 foi reescrito em Python puro por incompatibilidade do R com o Smart App Control (SAC) do Windows 11.
 
 ---
 

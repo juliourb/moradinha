@@ -38,6 +38,8 @@ import logging
 import re
 from pathlib import Path
 
+import warnings
+
 import duckdb
 import geopandas as gpd
 
@@ -194,9 +196,11 @@ def coletar_grupo4(
 
         gdf_setores = ler_tabela_espacial(db_conn, "setores_censitarios")
 
-        df_stats_setores = zonal_stats_por_camada(
-            tif_recortado, gdf_setores, stats=stats, prefixo="viirs"
-        )
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*PROJ.*")
+            df_stats_setores = zonal_stats_por_camada(
+                tif_recortado, gdf_setores, stats=stats, prefixo="viirs"
+            )
 
         # Juntar código do setor com as estatísticas
         col_setor = next(
@@ -224,9 +228,11 @@ def coletar_grupo4(
             logger.info("[Grupo 4] Calculando zonal stats por grade 200m...")
             gdf_grade = ler_tabela_espacial(db_conn, "grade_estatistica")
 
-            df_stats_grade = zonal_stats_por_camada(
-                tif_recortado, gdf_grade, stats=stats, prefixo="viirs"
-            )
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message=".*PROJ.*")
+                df_stats_grade = zonal_stats_por_camada(
+                    tif_recortado, gdf_grade, stats=stats, prefixo="viirs"
+                )
 
             # Adicionar ID da célula de grade para permitir joins
             col_id_grade = next(

@@ -37,6 +37,7 @@ from .grupos.grupo2_censo import coletar_grupo2
 from .grupos.grupo3_logradouros import coletar_grupo3
 from .grupos.grupo4_luminosidade import coletar_grupo4
 from .grupos.grupo5_pnadc import coletar_grupo5
+from .grupos.grupo6_uso_solo_precariedade import coletar_grupo6
 from .utils.db_utils import abrir_conexao, listar_tabelas
 from .utils.raster_utils import ler_tabela_espacial
 
@@ -48,6 +49,7 @@ GRUPOS_DISPONIVEIS: dict[int, str] = {
     3: "grupo3_logradouros",
     4: "grupo4_luminosidade",
     5: "grupo5_pnadc",
+    6: "grupo6_uso_solo_precariedade",
 }
 
 # Subpastas de dados brutos por grupo
@@ -57,6 +59,7 @@ _SUBDIR_GRUPO: dict[int, str] = {
     3: "logradouros",
     4: "luminosidade",
     5: "pnadc",
+    6: "uso_solo",
 }
 
 
@@ -340,6 +343,18 @@ def coletar_municipio(
     try:
         limite_municipal: gpd.GeoDataFrame | None = None
 
+        # Pré-carrega limite_municipal do DuckDB quando o grupo 1 não está na lista.
+        # Permite rodar subgrupos isolados (ex: GRUPOS=[6]) sem rexecutar a coleta completa.
+        if 1 not in grupos:
+            try:
+                if "limite_municipal" in listar_tabelas(db_conn):
+                    limite_municipal = ler_tabela_espacial(db_conn, "limite_municipal")
+                    logger.info(
+                        "limite_municipal pré-carregado do DuckDB (grupo 1 não incluído)."
+                    )
+            except Exception as exc:
+                logger.warning("Não foi possível pré-carregar limite_municipal: %s", exc)
+
         for grupo in sorted(grupos):
             nome_grupo = GRUPOS_DISPONIVEIS[grupo]
             output_dir = raw_dir / _SUBDIR_GRUPO[grupo]
@@ -407,6 +422,19 @@ def coletar_municipio(
                         limite_municipal=limite_municipal,
                         output_dir=output_dir,
                         db_conn=db_conn,
+                        forcar=forcar,
+                        cache_dir=base_dir / "raw" / "cache_pnadc",
+                    )
+
+                elif grupo == 6:
+                    tiles_dir = base_dir / "raw" / "tiles_globais"
+                    resultado = coletar_grupo6(
+                        codigo_ibge=codigo_ibge,
+                        limite_municipal=limite_municipal,
+                        output_dir=output_dir,
+                        db_conn=db_conn,
+                        tile_dir=tiles_dir,
+                        fcu_cache_dir=base_dir / "raw" / "cache_fcu",
                         forcar=forcar,
                     )
 

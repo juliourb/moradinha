@@ -95,10 +95,10 @@ Ao encerrar uma sessão (ou quando o pesquisador disser "salva o contexto"), o a
 | `utils/raster_utils.py` | ✅ Concluído | clip_raster (rasterio) + zonal_stats_por_camada (rasterstats) + ler_tabela_espacial. |
 | `grupo1_geometrias.py` | ✅ Concluído | Testado com 2701407 (1 quadrante: ID_58) e 2701803 (2 quadrantes: ID_57+ID_58). Concatenação e clip corretos. |
 | `grupo2_censo.py` | ✅ Concluído | Testado com 2701407: domicilio01 (90 cols), domicilio02 (407 cols), responsavel01 (6 cols). 72 setores cada. |
-| `grupo3_logradouros.py` | ✅ Concluído | Testado com 2701407: 14.966 endereços CNEFE, 1.682 faces, 3.294 eixos OSM. |
+| `grupo3_logradouros.py` | ✅ Concluído | 3 tabelas CNEFE + qualidade_geo. Testado com 2700300: 120.326 total, 96.193 residencial, 18.845 não-residencial, qualidade 99,97% alta. |
 | `grupo4_luminosidade.py` | ✅ Concluído | Testado com 2701407 (Campo Alegre-AL). modo='tile_local'. TIF 54x56px. luminosidade_2022 (66 setores) + luminosidade_2022_grade200 (976 células). |
-| `grupo5_pnadc.py` | ✅ Concluído | Testado com 2701407 (Campo Alegre-AL). V2001=3.25±0.05, n=4732, V1029=2717818 (RM). S01xxx ausentes em todo PNADc 2022 — documentado nos metadados. |
-| `grupo6_extensoes.py` (stub) | ⬜ Pendente | — |
+| `grupo5_pnadc.py` | 🟡 Em revisão | Será reescrito para PNADc Anual V1 + metodologia FJP 2021 (3 componentes em cascata). Versão trimestral preservada em `grupo5_pnadc.py.bak_trimestral`. |
+| `grupo6_uso_solo_precariedade.py` | 🟡 Implementado | MapBiomas clip+zonal stats + FCU download+intersecção. Aguardando teste com 2700300. |
 | `orquestrador.py` | 🟡 Em progresso | Implementação do mapa vetorial com luminosidade de grade 200m. |
 
 ---
@@ -129,6 +129,21 @@ Ao encerrar uma sessão (ou quando o pesquisador disser "salva o contexto"), o a
 | 2026-03-22 | Tipo de município (capital/RM/interior) detectado via geobr::read_capitals + read_metro_area → mapeado para regex de V1023 → seleciona V1029 com V1023 correspondente | Hardcoded por UF | Dinâmico para qualquer município brasileiro |
 | 2026-03-22 | S01xxx (S01007A, S01011C, etc.) NÃO existem em nenhum produto PNADc acessível via get_pnadc() — trimestral T1-T4/2022 e interview=1/5 confirmados. Pertencem ao "Módulo Habitação" publicado separadamente pelo IBGE, sem acesso padrão pelo pacote PNADcIBGE | Assumir presença nos dados | Ausência confirmada após download de todos os trimestres e visitas de 2022 |
 | 2026-03-22 | Fallback S01xxx: tenta outros trimestres do mesmo ano → interview=5 → documenta ausência nos metadados sem erro fatal | Falhar a execução | Consistente com a regra: variáveis ausentes = aviso, não erro |
+| 2026-04-21 | Grupo 5 reescrito em Python puro (sem R) usando requests + pandas.read_fwf + svy (Taylor linearization) | Manter R via subprocess | Smart App Control (SAC) do Windows 11 bloqueava DLLs do R, impedindo execução do script R |
+| 2026-04-21 | Filtro de UF feito pela coluna `UF` (string "27") em vez de prefixo de V1029 | Prefixo de V1029 (como no R) | V1029 no arquivo de largura fixa tem zeros à esquerda ("002717818") — o prefixo leria "00" em vez de "27" |
+| 2026-04-21 | geobr.read_capitals(as_sf=False) em vez de as_sf=True | as_sf=True (padrão) | Bug no geobr Python: read_capitals chama read_municipal_seat(show_progress=...) mas essa função não aceita esse parâmetro |
+| 2026-04-21 | Dicionário PNADc obtido de Dicionario_e_input_20221031.zip (pasta Documentacao/) → extrai dicionario_PNADC_microdados_trimestral.xls | Download direto de .xls | IBGE empacota o dicionário dentro de um ZIP; não há .xls direto na pasta |
+| 2026-04-21 | VD5008 é variável derivada: não existe no arquivo de microdados de largura fixa (confirmado via dicionário e arquivo .txt de input) | Tratá-la como qualquer outra variável | VD5008 é calculada pelo pacote PNADcIBGE; não integra o produto de microdados brutos |
+| 2026-04-21 | samplics substituído por svy (pip install svy) para estimação com plano amostral | samplics | samplics 0.6.0 está arquivado; svy é o substituto mantido ativo (svylab.com) |
+| 2026-04-25 | Migrar Grupo 5 da PNADc Trimestral para PNADc Anual Visita 1 | Manter Trimestral | A Trimestral não contém variáveis S01XXX de habitação. Apenas a Anual V1 (módulo Características Gerais dos Domicílios e Moradores) tem o módulo completo. FJP usa exclusivamente este produto. |
+| 2026-04-25 | Adotar `V1032` como peso de domicílio em vez de `V1028` | Manter `V1028` | `V1028` é peso de pessoa; para estimativas de domicílio FJP usa `V1032` (peso com calibração). Réplicas `V1032001`–`V1032200` para erro padrão via Rao-Wu. |
+| 2026-04-25 | Implementar metodologia FJP 2021 (3 componentes em cascata) no próprio Grupo 5 | Deixar cálculo do déficit para módulo separado | Grupo 5 deve entregar não apenas microdados da PNADc, mas também a estimativa de déficit pronta para a área de ponderação — é o produto final esperado deste grupo. |
+| 2026-04-25 | Domicílios improvisados ficam fora do Grupo 5 | Tentar derivar via PNADc | A partir de 2016 o IBGE deixou de captar improvisados na PNADc. FJP usa CadÚnico para esse subcomponente. Documentar nos metadados; integração com CadÚnico fica para Grupo 6. |
+| 2026-04-25 | Adensamento excessivo em alugados não entra no déficit (passou para inadequação na FJP 2021) | Manter como 4º componente | Mudança documentada no Relatório Metodológico FJP 2021. O déficit atual tem 3 componentes, não 4. |
+| 2026-04-25 | V1029 (área de ponderação) não existe na PNADc Anual V1 2022 — domínio de estimação é (UF + V1023) | Usar V1029 como no produto Trimestral | Confirmado por inspeção do dicionário XLS: variáveis V10xx disponíveis são V1030, V1031, V1032, V1034. Sem V1029. A Anual V1 é representativa apenas para UF × tipo de área (capital/RM/interior). filtrar_area_ponderacao() usa V1023 como seletor; dominios_usados registra "V1023=2, V1023=3" nos metadados. |
+| 2026-04-25 | Códigos S01XXX de 2022 diferem dos usados no plano original (baseado em versão anterior) | Manter códigos do plano | Confirmado via parsear_dicionario() + parsear_categorias(): S01005=cômodos, S01006=dormitórios, S01017=condição ocupação, S01019=aluguel. Constantes S01001_COMODO={3}, S01002_RUSTICO={3,5,6}, S01017_ALUGADO={3} hardcoded com comentário indicando que devem ser validadas ao mudar de ano. |
+| 2026-04-26 | CNEFE separado em 3 tabelas: bruta + residencial + não-residencial | Filtragem só no consumo (modulo_estimacao) | Filtragem na coleta evita repetição de lógica em todas as etapas; tabelas filtradas servem como contrato claro entre módulos |
+| 2026-04-26 | Coluna qualidade_geo derivada de NV_GEO_COORD adicionada em todas as tabelas CNEFE | Manter NV_GEO_COORD bruto | Categorização semântica facilita filtros downstream sem que o consumidor precise lembrar dos códigos numéricos |
 
 ---
 
@@ -137,8 +152,9 @@ Ao encerrar uma sessão (ou quando o pesquisador disser "salva o contexto"), o a
 > *Registrar aqui erros encontrados e como foram resolvidos.*
 
 | Data | Erro | Solução |
-|---|---|---|
+| --- | --- | --- |
 | 2026-04-14 | `luminosidade_YYYY_grade200` não contém geometria e não pode ser lida diretamente como GeoDataFrame | Unir a tabela de estatísticas à camada `grade_estatistica` com geometria antes de plotar |
+| 2026-04-21 | SAC (Smart App Control) do Windows 11 bloqueava DLLs do R, impedindo execução via subprocess no ambiente conda moradinha | Reescrita do Grupo 5 em Python puro (sem R) |
 
 ---
 
@@ -310,6 +326,21 @@ url_faces = (
 
 **Importante:** consultar o notebook do projeto `h3_jacarei` e refatorar o código existente — não reescrever do zero.
 
+#### 3.4 — Filtros aplicados ao CNEFE (decisão 2026-04-26)
+
+O CNEFE bruto contém múltiplas espécies de endereços. Para evitar contaminação de
+covariáveis habitacionais, três tabelas são geradas:
+
+- `enderecos_cnefe`: bruta (todas as espécies, todas as qualidades de geocodificação)
+- `enderecos_cnefe_residencial`: COD_ESPECIE = 1 (domicílios particulares apenas)
+- `enderecos_cnefe_naoresidencial`: COD_ESPECIE ∈ {4,5,6,8} (escolas, saúde, outras
+  finalidades, religiosos)
+
+Coluna adicional `qualidade_geo` em todas as tabelas: `alta`/`media`/`baixa` baseada em
+`NV_GEO_COORD`. Permite filtragem posterior quando a covariável depende de localização fina.
+
+Domicílios coletivos (espécie 2) e construções (espécie 7) ficam apenas na tabela bruta.
+
 ---
 
 ### Grupo 4 — Luminosidade noturna VIIRS VNL V2.2
@@ -350,159 +381,183 @@ stats_setores = zonal_stats(
 
 ---
 
-### Grupo 5 — PNADc (Pesquisa Nacional por Amostra de Domicílios Contínua)
+### Grupo 5 — PNADc Anual Visita 1 + cálculo do déficit habitacional FJP
 
-> ⚠️ **Limitação fundamental:** A PNADc **não tem representatividade municipal**. A menor unidade geográfica publicada é a **área de ponderação**. Para qualquer município, a área de ponderação correspondente deve ser identificada via `geobr::read_weighting_area()` e filtrada com precisão. **Nunca usar dados agregados para a UF inteira como proxy do município.**
+> ⚠️ **Limitação fundamental:** A PNADc não tem representatividade municipal. A menor unidade geográfica publicada é a **área de ponderação**. As estimativas geradas neste grupo valem para a área de ponderação inteira, não para o município isoladamente. Esse aviso deve constar nos metadados.
 
-#### 5.1 — Método de acesso
+#### 5.1 — Por que PNADc Anual Visita 1 (e não Trimestral)
 
-O fluxo adotado é: **R + `PNADcIBGE` → CSV → Python → DuckDB**
+A PNADc visita cada domicílio 5 vezes em trimestres consecutivos. As características do domicílio (paredes, piso, água, esgoto, condição de ocupação, valor de aluguel) só são coletadas na **1ª visita**. As variáveis com prefixo `S01XXX` (módulo de habitação) só existem no produto da Anual V1, não no produto Trimestral. A FJP usa exclusivamente esse produto desde a metodologia 2021.
 
-- R é mantido para extração e cálculo de estimativas porque o pacote `PNADcIBGE` trata o plano amostral complexo de forma robusta via `survey`
-- Python consome o CSV exportado pelo R e persiste no DuckDB
-- A integração ocorre via `subprocess.run(["Rscript", ...])`
+Em 2020 e 2021 não houve divulgação da Anual V1 por causa da pandemia (coleta apenas por telefone). A série tem hiato 2019 → 2022.
 
-**Pergunta obrigatória antes de implementar:** confirmar com o pesquisador se o R está instalado no ambiente `moradinha` e qual o caminho do executável `Rscript`.
+#### 5.2 — Método de acesso adotado
 
-#### 5.2 — Variáveis a coletar
+**Fluxo:** download direto do FTP IBGE em Python puro (sem R), seguindo o padrão dos demais grupos.
 
-| Variável | Descrição | Categoria |
+```
+1. Baixar dicionário Anual V1 do ano alvo (XLS) → identificar posições e códigos
+2. Baixar microdado fixed-width (TXT) do ano alvo
+3. Ler com pandas.read_fwf usando widths do input SAS
+4. Filtrar pela área de ponderação (V1029) que contém o município
+5. Aplicar regras FJP 2021 (cascata de 3 componentes)
+6. Estimar com plano amostral usando V1032 e replicações V1032001-V1032200
+7. Persistir resultados no DuckDB
+```
+
+Justificativa de não usar R: SAC do Windows 11 bloqueava DLLs do R (decisão 2026-04-21 preservada). Plano amostral implementado via método de replicações Rao-Wu (Bootstrap RW).
+
+#### 5.3 — Variáveis a coletar da PNADc Anual V1
+
+**Atenção:** os códigos S01XXX podem variar ano a ano. O agente DEVE baixar o dicionário do ano alvo e confirmar cada código antes de implementar a leitura. A tabela abaixo é referência preliminar — todos os códigos S01XXX precisam validação no dicionário efetivamente baixado.
+
+##### 5.3.1 Identificação e plano amostral (padrão estável entre anos)
+
+| Código | Descrição | Uso |
 |---|---|---|
-| `V1028` | Peso do domicílio | **Obrigatório — plano amostral** |
-| `Estrato` | Estrato da amostra | **Obrigatório — plano amostral** |
-| `UPA` | Unidade Primária de Amostragem | **Obrigatório — plano amostral** |
-| `V1029` | Código da área de ponderação | **Obrigatório — filtro geográfico** |
-| `V1022` | Situação do domicílio (urbano/rural) | Caracterização territorial |
-| `V1023` | Tipo de área (capital, resto da RM, etc.) | Caracterização territorial |
-| `V2001` | Tipo de domicílio | Estrutura habitacional |
-| `VD5008` | Renda domiciliar per capita | Renda |
-| `S01007A` | Material predominante nas paredes externas | Adequação construtiva |
-| `S01011C` | Cobertura do telhado | Adequação construtiva |
-| `S01012A` | Abastecimento de água | Serviços básicos |
-| `S01013` | Esgotamento sanitário | Serviços básicos |
-| `S01017` | Destino do lixo | Serviços básicos |
-| `S01019` | Número de banheiros | Adensamento / condições |
+| `Ano` | Ano de referência | Filtro |
+| `UF` | UF (string 2 dígitos) | Filtro inicial |
+| `UPA` | Unidade Primária de Amostragem | Plano amostral |
+| `Estrato` | Estrato amostral | Plano amostral |
+| `V1008` | Nº de seleção do domicílio | Chave de domicílio |
+| `V1014` | Painel | Chave de domicílio |
+| `V1022` | Tipo de situação (1=urbano, 2=rural) | Filtro de ônus excessivo |
+| `V1023` | Tipo de área (capital, RM, RIDE, resto) | Estratificação |
+| `V1029` | Código da área de ponderação | **Filtro geográfico crítico** |
+| `V1032` | **Peso COM calibração** | **Peso principal de domicílio** |
+| `V1032001`...`V1032200` | Pesos replicados (Rao-Wu) | Erros padrão / IC 95% |
 
-> **Nota:** as variáveis `S01xxx` pertencem ao suplemento habitacional e podem não estar disponíveis em todos os trimestres. Tratar ausência com aviso no log, não como erro fatal. O módulo deve registrar no `metadata.json` quais variáveis estavam ausentes para o trimestre coletado.
+##### 5.3.2 Pessoas e composição familiar
 
-#### 5.3 — Fluxo de processamento
+| Código | Descrição | Uso na FJP |
+|---|---|---|
+| `V2001` | Nº de pessoas no domicílio | Adensamento, per capita |
+| `V2005` | Condição da pessoa no domicílio | Núcleos familiares |
+| `V2007` | Sexo | Recortes |
+| `V2009` | Idade na data de referência | Recortes |
+| `V2010` | Cor ou raça | Recortes |
+
+##### 5.3.3 Variáveis derivadas (módulo VDXXXX)
+
+| Código | Descrição | Uso na FJP |
+|---|---|---|
+| `VD2002` | Condição na unidade doméstica | **Identifica núcleos secundários** |
+| `VD2004` | Espécie da unidade doméstica (unipessoal, nuclear, extensa, composta) | **Crítica — coabitação** |
+| `VD5007` | Renda habitual domiciliar (todas as fontes) | **Crítica — ônus excessivo, recortes de renda** |
+| `VD5008` | Renda habitual domiciliar per capita | Recortes de pobreza |
+
+##### 5.3.4 Características do domicílio (módulo S01XXX) — confirmar códigos no dicionário do ano
+
+| Código de referência | Descrição esperada | Componente FJP |
+|---|---|---|
+| `S01001` | Tipo do domicílio (casa, apto, cômodo/cortiço, etc.) | Habitação Precária + Coabitação |
+| `S01002` | Material predominante das paredes externas | Habitação Precária (rústicos) |
+| `S01007` | Nº total de cômodos | Adensamento (inadequação) |
+| `S01008` | Nº de cômodos servindo de dormitório | **Coabitação por adensamento** |
+| `S01032` | Condição de ocupação (próprio, alugado, cedido) | **Crítica — ônus excessivo** |
+| `S01033` | Valor mensal do aluguel | **Crítica — ônus excessivo** |
+
+> 🔬 **Tarefa do agente antes de implementar a leitura**: baixar o dicionário do ano alvo, filtrar linhas com prefixo `S01` e gerar tabela mapeamento código → descrição → posição no fixed-width. Salvar em `data/raw/{municipio}/pnadc/dicionario_S01_{ano}.csv` para auditoria.
+
+#### 5.4 — Lógica de cálculo do déficit habitacional FJP (cascata, 3 componentes)
+
+Cada domicílio é avaliado em sequência. Se entrar em um componente, **não é mais avaliado nos seguintes** (anti-dupla-contagem).
+
+```
+PARA cada domicílio i com peso V1032[i]:
+
+  COMPONENTE 1 — HABITAÇÃO PRECÁRIA
+    flag_rustico: S01002 indica material não durável das paredes externas
+    (taipa não revestida, madeira aproveitada, palha, outro)
+    SE flag_rustico → componente = "habitacao_precaria" → próximo domicílio
+
+    Domicílios improvisados: FORA DO ESCOPO (não vem da PNADc; vem do CadÚnico)
+    → documentar nos metadados como subcomponente externo
+
+  COMPONENTE 2 — COABITAÇÃO FAMILIAR
+    flag_comodo: S01001 = cômodo/cortiço
+    flag_coabit_adens: VD2004 ∈ {extensa, composta} E V2001/S01008 > 2
+    SE flag_comodo OU flag_coabit_adens → componente = "coabitacao" → próximo domicílio
+
+  COMPONENTE 3 — ÔNUS EXCESSIVO COM ALUGUEL URBANO
+    Todos verdadeiros simultaneamente:
+        V1022 = 1                        (urbano)
+        S01001 indica domicílio durável  (casa OU apto, NÃO cômodo)
+        flag_rustico = 0
+        S01032 = código de "alugado"
+        VD5007 / SM_VIGENTE ≤ 3          (renda ≤ 3 SM)
+        S01033 / VD5007 ≥ 0,30           (gasta ≥30% com aluguel)
+    SE todos verdadeiros → componente = "onus_excessivo"
+
+  CASO CONTRÁRIO → componente = "nao_deficit"
+```
+
+#### 5.5 — Estimação com plano amostral (Rao-Wu Bootstrap)
 
 ```python
-import subprocess
-from pathlib import Path
+# Estimativa pontual usando V1032
+total_deficit = sum(df.loc[df["componente"] != "nao_deficit", "V1032"])
 
-def coletar_grupo5_pnadc(
-    codigo_ibge: str,
-    limite_municipal,
-    output_dir: Path,
-    db_conn,
-    ano: int = 2022,
-    trimestre: int = 4,
-    **kwargs
-) -> dict:
+# Erro padrão usando 200 réplicas
+rep_totals = [
+    sum(df.loc[df["componente"] != "nao_deficit", f"V1032{r:03d}"])
+    for r in range(1, 201)
+]
 
-    script_r = Path("moradinha/modulo_coleta/r_scripts/extrair_pnadc.R")
-    output_pnadc = output_dir / "pnadc"
-    output_pnadc.mkdir(parents=True, exist_ok=True)
-
-    result = subprocess.run(
-        [
-            "Rscript", str(script_r),
-            "--codigo_ibge", codigo_ibge,
-            "--ano", str(ano),
-            "--trimestre", str(trimestre),
-            "--output_dir", str(output_pnadc)
-        ],
-        capture_output=True, text=True
-    )
-
-    if result.returncode != 0:
-        return {"status": "erro", "mensagem": result.stderr}
-
-    import pandas as pd
-    csv_path = output_pnadc / f"pnadc_{ano}T{trimestre}_estimativas.csv"
-    df = pd.read_csv(csv_path)
-    db_conn.execute("CREATE OR REPLACE TABLE pnadc_estimativas AS SELECT * FROM df")
-
-    return {"status": "ok", "camadas": ["pnadc_estimativas"], "mensagem": "ok"}
-```
-
-#### 5.4 — Script R (estrutura mínima de referência)
-
-```r
-# extrair_pnadc.R
-# Uso: Rscript extrair_pnadc.R --codigo_ibge 3524402 --ano 2022 --trimestre 4 --output_dir ...
-
-suppressPackageStartupMessages({
-  library(PNADcIBGE)
-  library(survey)
-  library(dplyr)
-  library(geobr)
-})
-
-# --- parsear argumentos ---
-args <- commandArgs(trailingOnly = TRUE)
-# implementar parser simples para --chave valor
-
-# --- identificar área de ponderação do município ---
-# NUNCA filtrar pela UF inteira
-areas_pond <- geobr::read_weighting_area(code_muni = as.integer(codigo_ibge))
-cod_pond <- unique(areas_pond$code_weighting)
-
-# --- baixar e preparar dados ---
-vars_necessarias <- c(
-  "V1028", "Estrato", "UPA", "V1029",
-  "V1022", "V1023", "V2001", "VD5008",
-  "S01007A", "S01011C", "S01012A", "S01013", "S01017", "S01019"
-)
-
-pnadc_raw <- get_pnadc(year = ano, quarter = trimestre, vars = vars_necessarias)
-
-# --- definir plano amostral (OBRIGATÓRIO) ---
-pnadc_design <- pnadc_design(pnadc_raw)
-
-# --- filtrar pela área de ponderação ---
-pnadc_local <- subset(pnadc_design, V1029 %in% cod_pond)
-
-# --- calcular estimativas com variância correta ---
-est_renda      <- svymean(~VD5008, design = pnadc_local, na.rm = TRUE)
-est_habitacao  <- svymean(
-  ~V2001 + S01007A + S01011C + S01012A + S01013 + S01017 + S01019,
-  design = pnadc_local, na.rm = TRUE
-)
-
-# --- exportar ---
-df_out <- rbind(
-  data.frame(variavel = names(coef(est_renda)),    estimativa = coef(est_renda),    erro_padrao = SE(est_renda)),
-  data.frame(variavel = names(coef(est_habitacao)), estimativa = coef(est_habitacao), erro_padrao = SE(est_habitacao))
-)
-write.csv(df_out,
-          file.path(output_dir, paste0("pnadc_", ano, "T", trimestre, "_estimativas.csv")),
-          row.names = FALSE)
-```
-
-#### 5.5 — Metadados obrigatórios do Grupo 5
-
-```json
-{
-  "fonte": "IBGE PNADc",
-  "ano": 2022,
-  "trimestre": 4,
-  "nivel_geografico": "area_de_ponderacao",
-  "areas_ponderacao_usadas": ["..."],
-  "variaveis_coletadas": ["V1028", "V1029", "VD5008", "S01007A", "S01011C", "S01012A", "S01013", "S01017", "S01019", "V2001", "V1022", "V1023"],
-  "variaveis_ausentes": [],
-  "metodo_estimacao": "svymean/svytotal via PNADcIBGE + survey",
-  "aviso": "Estimativas válidas para a área de ponderação. NÃO representam o município isoladamente."
-}
+import numpy as np
+var_estimada = (1/200) * sum((np.array(rep_totals) - total_deficit)**2)
+erro_padrao  = np.sqrt(var_estimada)
+ic_95_inf    = total_deficit - 1.96 * erro_padrao
+ic_95_sup    = total_deficit + 1.96 * erro_padrao
+cv           = erro_padrao / total_deficit  # suprimir se CV > 0.30
 ```
 
 #### 5.6 — Tabelas DuckDB geradas pelo Grupo 5
 
 | Tabela | Conteúdo |
 |---|---|
-| `pnadc_estimativas` | Estimativas pontuais + erro padrão por variável |
-| `pnadc_metadados` | Trimestre, ano, áreas de ponderação, avisos |
+| `pnadc_microdados_v1` | Microdados filtrados pela área de ponderação + coluna `componente` FJP |
+| `pnadc_deficit_componentes` | Total estimado e erro padrão por componente (precária, coabitação, ônus, total) |
+| `pnadc_deficit_recortes` | Estimativas por recortes (sexo do responsável, cor/raça, faixa de renda) |
+| `pnadc_metadados` | Ano, área de ponderação, V1029 usado, variáveis ausentes, avisos, hash do dicionário |
+
+#### 5.7 — Assinatura da função principal
+
+```python
+def coletar_grupo5(
+    codigo_ibge: str,
+    limite_municipal: gpd.GeoDataFrame,
+    output_dir: Path,
+    db_conn,
+    ano: int = 2022,
+    salario_minimo: float | None = None,  # None = usar default {2022: 1212.00, 2023: 1320.00}
+    forcar: bool = False,
+    **kwargs,
+) -> dict
+```
+
+> ⚠️ **Salário mínimo:** para anos fora do dicionário interno `{2022: 1212.00, 2023: 1320.00}`, o parâmetro `salario_minimo` é obrigatório. O orquestrador deve ser configurado com o valor correto para o ano usado.
+
+#### 5.8 — Metadados obrigatórios do Grupo 5
+
+```json
+{
+  "fonte": "IBGE PNADc Anual Visita 1",
+  "ano": 2022,
+  "metodologia": "FJP 2021 (Relatório Metodológico — 3 componentes do déficit em cascata)",
+  "metodologia_url": "https://repositorio.fjp.mg.gov.br/items/a79c5256-7329-443b-acad-30c5e9640bd8",
+  "nivel_geografico": "area_de_ponderacao",
+  "v1029_usados": ["..."],
+  "hash_microdados_md5": "...",
+  "hash_dicionario_md5": "...",
+  "variaveis_coletadas": ["..."],
+  "variaveis_ausentes": [],
+  "subcomponentes_externos": ["habitacao_precaria/improvisados (CadÚnico, fora deste módulo)"],
+  "metodo_estimacao": "Rao-Wu Bootstrap com 200 réplicas (V1032001-V1032200)",
+  "salario_minimo_referencia": {"valor": 1212.00, "ano": 2022},
+  "aviso_geografico": "Estimativas válidas para a área de ponderação. NÃO representam o município isoladamente."
+}
+```
 
 ---
 
@@ -516,6 +571,50 @@ write.csv(df_out,
 6. **CRS padrão:** EPSG:4674 (SIRGAS 2000) antes de persistir qualquer dado vetorial
 7. **Generalidade:** nenhuma constante de município, UF ou código IBGE específico fora dos testes — tudo derivado do `codigo_ibge` recebido como parâmetro
 8. **Docstrings:** todos os parâmetros, retorno e fonte dos dados documentados
+
+---
+
+## Repositórios e fontes oficiais por grupo
+
+> Esta seção lista as URLs canônicas de cada fonte de dados. Sempre que uma URL falhar, consultar primeiro o repositório institucional da fonte antes de assumir mudança permanente.
+
+### Grupo 1 — Geometrias base
+- **geobr (Python)**: https://github.com/ipeaGIT/geobr — limites municipais, áreas de ponderação, regiões metropolitanas
+- **Setores censitários 2022 (FTP IBGE)**: https://geoftp.ibge.gov.br/organizacao_do_territorio/malhas_territoriais/malhas_de_setores_censitarios__divisoes_intramunicipais/censo_2022_preliminar/setores/gpkg/UF/
+- **Grade estatística 200m**: https://ftp.ibge.gov.br/Censos/Censo_Demografico_2022/Grade_de_Estatisticas/
+
+### Grupo 2 — Censo 2022 (agregados por setor)
+- **Domicílio01 / Domicílio02**: https://ftp.ibge.gov.br/Censos/Censo_Demografico_2022/Resultados_do_Universo/Agregados_por_Setores_Censitarios/Agregados_por_Setor_csv/
+- **Responsável01 (renda do responsável)**: https://ftp.ibge.gov.br/Censos/Censo_Demografico_2022/Resultados_do_Universo/Agregados_por_Setores_Censitarios_Rendimento_do_Responsavel/
+- **Documentação técnica**: https://www.ibge.gov.br/estatisticas/sociais/populacao/22827-censo-demografico-2022.html
+
+### Grupo 3 — Endereços e logradouros
+- **CNEFE 2022**: https://ftp.ibge.gov.br/Cadastro_Nacional_de_Enderecos_para_Fins_Estatisticos/Censo_Demografico_2022/Coordenadas_enderecos/UF/
+- **Faces de logradouros 2022**: https://geoftp.ibge.gov.br/recortes_para_fins_estatisticos/malha_de_setores_censitarios/censo_2022/base_de_faces_de_logradouros_versao_2022_censo_demografico/shp/
+- **OSMnx**: https://github.com/gboeing/osmnx (consulta Overpass API)
+
+### Grupo 4 — Luminosidade noturna VIIRS
+- **EOG / Earth Observation Group**: https://eogdata.mines.edu/products/vnl/
+- **VNL V2.2 anual**: https://eogdata.mines.edu/nighttime_light/annual/v22/
+- **Documentação do produto**: https://eogdata.mines.edu/products/vnl/#annual_v2
+- **Token EOG**: registro gratuito em https://eogdata.mines.edu/products/register/
+
+### Grupo 5 — PNADc Anual Visita 1
+- **Microdados (FTP IBGE)**: https://ftp.ibge.gov.br/Trabalho_e_Rendimento/Pesquisa_Nacional_por_Amostra_de_Domicilios_continua/Anual/Microdados/Visita/Visita_1/
+- **Dicionário e SAS input**: pasta `Documentacao/` no FTP acima — arquivo `dicionario_PNADC_microdados_{ano}_visita1_*.xls`
+- **Página oficial PNADc**: https://www.ibge.gov.br/estatisticas/sociais/trabalho/17270-pnad-continua.html
+
+### Metodologia FJP — referência canônica
+- **Página de divulgação**: https://fjp.mg.gov.br/deficit-habitacional-no-brasil/
+- **Relatório Metodológico 2021** (definições + fórmulas atuais): https://repositorio.fjp.mg.gov.br/items/a79c5256-7329-443b-acad-30c5e9640bd8
+- **Nota Técnica FJP 1/2024 — "As voltas que o ônus dá"** (alternativas para ônus em escala municipal — diretamente relevante para a tese): http://www.bibliotecadigital.mg.gov.br/consulta/consultaDetalheDocumento.php?iCodDocumento=77618
+
+### Grupo 6 — Extensões (futuras)
+- **CadÚnico (microdados)**: depende de convênio institucional via Ministério do Desenvolvimento Social
+- **CNES**: https://datasus.saude.gov.br/cnes/ (API + FTP)
+- **INEP — Catálogo de Escolas**: https://www.gov.br/inep/pt-br/areas-de-atuacao/pesquisas-estatisticas-e-indicadores/censo-escolar
+- **MapBiomas**: https://brasil.mapbiomas.org/ (Coleção 9, GEE ou downloads por bbox)
+- **Aglomerados Subnormais 2022 (IBGE)**: https://www.ibge.gov.br/geociencias/organizacao-do-territorio/tipologias-do-territorio/15788-aglomerados-subnormais.html
 
 ---
 

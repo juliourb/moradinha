@@ -23,6 +23,31 @@ from pathlib import Path
 import geopandas as gpd
 import pandas as pd
 
+
+class _FiltroProj(logging.Filter):
+    """Suprime warnings de incompatibilidade de versão do proj.db emitidos pelo GDAL.
+
+    Ocorre quando a biblioteca PROJ carregada tem versão diferente do proj.db
+    encontrado no ambiente (ex: conflito entre instalações conda). O processamento
+    continua correto — é apenas um aviso cosmético.
+    """
+
+    _MARCADORES = ("DATABASE.LAYOUT.VERSION.MINOR", "proj_create_from_database", "proj_create_from_name")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not any(m in msg for m in self._MARCADORES)
+
+
+_filtro_proj = _FiltroProj()
+# Filtros no logger object não interceptam registros propagados de loggers filhos
+# (ex: fiona._env, rasterio._env). O filtro deve ser aplicado nos handlers e nos
+# loggers-fonte conhecidos.
+for _h in logging.getLogger().handlers:
+    _h.addFilter(_filtro_proj)
+for _nome in ("fiona", "fiona._env", "rasterio", "rasterio._env"):
+    logging.getLogger(_nome).addFilter(_filtro_proj)
+
 logger = logging.getLogger(__name__)
 
 
